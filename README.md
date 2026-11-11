@@ -5,7 +5,7 @@ Applicazione web progressiva per la registrazione dei controlli HACCP nei punti 
 ## Configurazione
 - Supabase project: ajrwoowmvbxtxnkjivpn
 - Il file `index.html` usa la sola publishable/anon key nel browser.
-- Sostituire `PASTE_PUBLISHABLE_KEY_HERE` con la publishable key del progetto prima del rilascio.
+- La publishable key è già configurata nel frontend.
 - Non inserire mai service_role o secret key nel frontend.
 
 ## Pubblicazione
