@@ -48,7 +48,7 @@
 </div>
 <div id="tab-clean" class="tabContent hidden"><div class="panel"><h2>Registro pulizie giornaliere</h2><p class="muted">Registra le attività solo dopo aver verificato che siano state realmente eseguite.</p><div class="actions"><button id="confirmStoreCleaning">Conferma tutte le pulizie di questo punto vendita</button><button id="confirmAllStoresCleaning" class="secondary hidden">Conferma tutte le pulizie di tutti i punti vendita</button></div><div id="cleanProgress" class="muted" style="margin:10px 0"></div><div id="cleaningList"></div></div></div>
 <div id="tab-history" class="tabContent hidden"><div class="panel"><h2>Storico controlli</h2><div class="grid"><div class="field"><label>Archivio mensile</label><input type="month" id="historyMonth"></div><div class="field"><label>Esportazione PDF</label><div class="actions"><button id="exportTempPdf">PDF temperature A4</button><button id="exportCleaningPdf" class="secondary">PDF pulizie A4</button></div></div></div><div class="actions"><button id="exportTemp" class="secondary">Esporta temperature CSV</button><button id="exportClean" class="secondary">Esporta pulizie CSV</button></div><div class="notice" style="margin-top:14px"><label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="previewMode" style="width:auto"> Modalità anteprima PDF per il mese selezionato</label></div><div id="historyList"></div></div></div>
-<div id="tab-admin" class="tabContent hidden"><div class="panel"><h2>Gestione</h2><p class="muted">Area amministratore. Gestione utenti, sedi, attrezzature e attività sarà resa disponibile dopo l'attivazione dell'account admin e la verifica delle procedure.</p><div id="adminInfo"></div><div id="operatorConsole" style="margin-top:18px">
+<div id="tab-admin" class="tabContent hidden"><div class="panel"><h2>Gestione</h2><p class="muted">Area amministratore. Gestione utenti, sedi, attrezzature e attività sarà resa disponibile dopo l'attivazione dell'account admin e la verifica delle procedure.</p><div id="adminInfo"></div><div class="panel" style="background:#f1f7f3;border:2px solid #174b3e;margin-top:16px"><h3 style="margin-top:0">Controllo giornaliero completo</h3><p class="muted">Un’unica conferma per registrare le temperature dei frigoriferi e le attività di pulizia di tutti i punti vendita.</p><button id="confirmAllControls" style="width:100%">COMPLETA TUTTI I CONTROLLI · FRIGORIFERI + PULIZIE</button><div id="allControlsStatus" class="muted" style="margin-top:10px"></div></div><div id="operatorConsole" style="margin-top:18px">
 <h3>Console operatori</h3><p class="muted">Crea gli account e assegna i punti vendita autorizzati.</p>
 <div class="panel" style="background:#f8faf9">
 <h4>Nuovo operatore</h4>
@@ -121,7 +121,7 @@ $('firstPasswordView').classList.add('hidden');
 const s=await db.from('stores').select('id,name,address,has_temperature_checks').eq('active',true).order('name');if(s.error){msg(s.error.message,'error');return}stores=s.data||[];
 if(profile.role==='admin'){currentStore=stores[0]?.id; $('storePickerWrap').classList.remove('hidden');$('storePicker').innerHTML=stores.map(x=>'<option value="'+x.id+'">'+x.name+' — '+x.address+'</option>').join('');$('adminTab').classList.remove('hidden')}
 else{const a=await db.from('user_stores').select('store_id,stores(id,name,address,has_temperature_checks)').eq('user_id',user.id);stores=(a.data||[]).map(x=>x.stores).filter(Boolean);currentStore=stores[0]?.id;$('storePickerWrap').classList.toggle('hidden',stores.length<2);$('storePicker').innerHTML=stores.map(x=>'<option value="'+x.id+'">'+x.name+'</option>').join('')}
-$('hello').textContent=(profile.full_name||user.email)+' · '+profile.role;$('adminManualPush').classList.toggle('hidden',profile.role!=='admin');$('confirmAllStoresTemps').classList.toggle('hidden',profile.role!=='admin');$('confirmAllStoresCleaning').classList.toggle('hidden',profile.role!=='admin');$('loginView').classList.add('hidden');$('appView').classList.remove('hidden');$('logout').classList.remove('hidden');$('storePicker').value=currentStore||'';await refreshStore();await refreshPushStatus();await refreshPasskeys()}
+$('hello').textContent=(profile.full_name||user.email)+' · '+profile.role;$('adminManualPush').classList.toggle('hidden',profile.role!=='admin');$('confirmAllStoresTemps').classList.add('hidden');$('confirmAllStoresCleaning').classList.add('hidden');$('loginView').classList.add('hidden');$('appView').classList.remove('hidden');$('logout').classList.remove('hidden');$('storePicker').value=currentStore||'';await refreshStore();await refreshPushStatus();await refreshPasskeys();if(profile.role==='admin'&&new URLSearchParams(location.search).get('haccp')==='global-checks'){document.querySelector('[data-tab="admin"]').click();$('confirmAllControls').scrollIntoView({behavior:'smooth',block:'center'});history.replaceState({},'',location.pathname)}}
 $('storePicker').onchange=async()=>{currentStore=$('storePicker').value;await refreshStore()};
 document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{document.querySelectorAll('[data-tab]').forEach(x=>x.classList.toggle('active',x===b));document.querySelectorAll('.tabContent').forEach(x=>x.classList.toggle('hidden',x.id!=='tab-'+b.dataset.tab));if(b.dataset.tab==='history')loadHistory()});
 async function refreshStore(){const s=stores.find(x=>x.id===currentStore);if(!s){$('storeTitle').textContent='Nessun punto vendita assegnato';return}$('storeTitle').textContent=s.name+' · '+s.address;
@@ -161,6 +161,41 @@ async function confirmStoreTemperatures(storeId){
  const ins=await db.from('temperature_checks').insert(rows);
  return {saved:ins.error?0:rows.length,error:ins.error?.message||null};
 }
+
+$('confirmAllControls').onclick=async()=>{
+ if(profile?.role!=='admin'||user?.id!=='33a03dd3-e566-47b9-812f-5e138ced50b4')return;
+ const btn=$('confirmAllControls'),status=$('allControlsStatus');
+ btn.disabled=true;status.textContent='Verifica delle checklist e delle attrezzature…';
+ try{
+  const preflight=await Promise.all(stores.map(async store=>{
+   const [eq,tk]=await Promise.all([
+    db.from('equipment').select('id,reference_temperature_c').eq('store_id',store.id).eq('active',true),
+    db.from('cleaning_tasks').select('id').eq('store_id',store.id).eq('active',true)
+   ]);
+   return {store,equipment:eq.data||[],tasks:tk.data||[],error:eq.error?.message||tk.error?.message};
+  }));
+  const failed=preflight.filter(x=>x.error);
+  if(failed.length)throw new Error('Impossibile verificare '+failed.map(x=>x.store.name+': '+x.error).join(' · '));
+  const tempTotal=preflight.reduce((n,x)=>n+x.equipment.filter(e=>e.reference_temperature_c!==null).length,0);
+  const missingTemp=preflight.reduce((n,x)=>n+x.equipment.filter(e=>e.reference_temperature_c===null).length,0);
+  const cleanTotal=preflight.reduce((n,x)=>n+x.tasks.length,0);
+  if(!tempTotal&&!cleanTotal)throw new Error('Non risultano controlli configurati nelle sedi.');
+  const confirmation='Confermi di aver verificato fisicamente i frigoriferi/attrezzature e di aver completato tutte le pulizie in TUTTI i punti vendita?\n\nTemperature da registrare: '+tempTotal+'\nAttività di pulizia: '+cleanTotal+(missingTemp?'\nAttrezzature senza temperatura di riferimento (non registrabili): '+missingTemp:'');
+  if(!window.confirm(confirmation))return;
+  status.textContent='Registrazione combinata in corso…';
+  let tempSaved=0,cleanSaved=0,cleanSkipped=0,errors=[];
+  for(const store of stores){
+   const t=await confirmStoreTemperatures(store.id);tempSaved+=t.saved;if(t.error)errors.push(store.name+' temperature: '+t.error);
+   const c=await registerCleaningForStore(store.id);cleanSaved+=c.saved;cleanSkipped+=c.skipped;if(c.error)errors.push(store.name+' pulizie: '+c.error);
+  }
+  const summary='Temperature nuove: '+tempSaved+'. Pulizie nuove: '+cleanSaved+'. Pulizie già registrate: '+cleanSkipped+'.'+(missingTemp?' Attrezzature senza valore di riferimento: '+missingTemp+'.':'');
+  status.textContent=errors.length?summary+' Errori: '+errors.join(' · '):summary+' Operazione completata.';
+  msg(errors.length?'Controllo globale parzialmente completato. '+summary+' Errori: '+errors.join(' · '):'Controlli globali registrati. '+summary,errors.length?'error':'ok');
+  await refreshStore();
+ }catch(e){status.textContent='Operazione non completata: '+(e.message||e);msg('Errore: '+(e.message||e),'error')}
+ finally{btn.disabled=false}
+};
+
 $('confirmStoreTemps').onclick=async()=>{
  const pending=equipment.filter(x=>!todayChecks.has(x.id)&&x.reference_temperature_c!==null).length;if(!pending)return;
  if(!window.confirm('Hai verificato fisicamente tutte le '+pending+' attrezzature ancora da controllare in questo punto vendita?'))return;
