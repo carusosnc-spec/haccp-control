@@ -153,31 +153,70 @@ async function loadHistory(){
 $('historyMonth').onchange=loadHistory;
 $('exportTemp').onclick=()=>csv('temperature-'+currentStore+'-'+($('historyMonth').value||localDay().slice(0,7))+'.csv',(window.tempRows||[]).map(x=>({data_ora:x.checked_at,attrezzatura:x.equipment?.name,temperatura:x.measured_temperature_c,metodo:x.method,note:x.notes})));
 $('exportClean').onclick=()=>csv('pulizie-'+currentStore+'-'+($('historyMonth').value||localDay().slice(0,7))+'.csv',(window.cleanRows||[]).map(x=>({data:x.check_date,attivita:x.cleaning_tasks?.name,stato:x.status,note:x.notes})));
+
 $('exportMonthPdf').onclick=async()=>{
  const store=stores.find(x=>x.id===currentStore);const month=$('historyMonth').value||localDay().slice(0,7);
  $('exportMonthPdf').disabled=true;$('exportMonthPdf').textContent='Preparazione PDF…';
  try{
-  if(!window.tempRows||!window.cleanRows)await loadHistory();
+  const [year,monthNum]=month.split('-').map(Number);
+  const monthStart=new Date(year,monthNum-1,1),monthEnd=new Date(year,monthNum,1);
+  const from=monthStart.toISOString(),to=monthEnd.toISOString();
+  const [eqResult,checkResult]=await Promise.all([
+   db.from('equipment').select('id,name,sort_order').eq('store_id',currentStore).eq('active',true).order('sort_order'),
+   fetchAll(db.from('temperature_checks').select('equipment_id,checked_at,measured_temperature_c').eq('store_id',currentStore).gte('checked_at',from).lt('checked_at',to).order('checked_at',{ascending:true}))
+  ]);
+  if(eqResult.error)throw eqResult.error;
+  const eq=eqResult.data||[],checks=checkResult||[];
   const {jsPDF}=await import('https://cdn.jsdelivr.net/npm/jspdf@2.5.2/+esm');
-  const doc=new jsPDF({orientation:'landscape',unit:'mm',format:'a4'});
-  const left=12;let y=15;
-  const addPageIfNeeded=()=>{if(y>185){doc.addPage();y=15}};
-  const line=(text,size=9,bold=false)=>{doc.setFont('helvetica',bold?'bold':'normal');doc.setFontSize(size);const lines=doc.splitTextToSize(String(text??''),270);doc.text(lines,left,y);y+=lines.length*(size*0.42)+2;addPageIfNeeded()};
-  const titleMonth=new Date(Number(month.slice(0,4)),Number(month.slice(5,7))-1,1).toLocaleDateString('it-IT',{month:'long',year:'numeric'});
-  line('HACCP CONTROL - REGISTRO MENSILE',16,true);line((store?.name||'Punto vendita')+' - '+(store?.address||''),11,true);line('Mese: '+titleMonth,10);line('Documento generato il '+new Date().toLocaleString('it-IT'),8);y+=3;
-  line('REGISTRO TEMPERATURE ('+(window.tempRows||[]).length+' registrazioni)',12,true);
-  const cols=[12,65,95,130,165,205,270];let rowH=7;
-  const tableRow=(vals,header=false)=>{addPageIfNeeded();doc.setFont('helvetica',header?'bold':'normal');doc.setFontSize(8);if(header)doc.setFillColor(226,237,230);if(header)doc.rect(left,y-4,273,rowH,'F');let x=cols[0];vals.forEach((v,i)=>{doc.text(doc.splitTextToSize(String(v??''),cols[i+1]-cols[i]-2)[0]||'',x+1,y);x=cols[i+1]});y+=rowH};
-  tableRow(['Data e ora','Attrezzatura','Temperatura','Metodo','Note'],true);
-  for(const r of (window.tempRows||[]))tableRow([new Date(r.checked_at).toLocaleString('it-IT'),r.equipment?.name,(r.measured_temperature_c??'')+' °C',r.method,r.notes||'']);
-  y+=5;addPageIfNeeded();line('REGISTRO PULIZIE ('+(window.cleanRows||[]).length+' registrazioni)',12,true);
-  tableRow(['Data','Attività','Stato','Note'],true);
-  for(const r of (window.cleanRows||[]))tableRow([r.check_date,r.cleaning_tasks?.name,r.status,r.notes||'']);
-  const pages=doc.internal.getNumberOfPages();for(let i=1;i<=pages;i++){doc.setPage(i);doc.setFontSize(8);doc.text('HACCP CONTROL - '+(store?.name||'')+' - Pagina '+i+'/'+pages,280,202,{align:'right'})}
-  doc.save('HACCP-'+month+'-'+(store?.name||'punto-vendita').replace(/[^a-z0-9]+/gi,'-')+'.pdf');
-  msg('PDF mensile generato. Le registrazioni restano archiviate nello storico.','ok');
- }catch(e){msg('Errore nella creazione del PDF: '+e.message,'error')}
+  // A3 landscape: one page, one row per calendar day and one column per active refrigerator/equipment.
+  const doc=new jsPDF({orientation:'landscape',unit:'mm',format:'a3'});
+  const pageW=420,pageH=297,margin=8,top=31,bottom=8,dateW=18;
+  const usableW=pageW-2*margin-dateW,colW=eq.length?usableW/eq.length:usableW;
+  const rowH=Math.min(7.1,(pageH-top-bottom-20)/new Date(year,monthNum,0).getDate());
+  const days=new Date(year,monthNum,0).getDate();
+  const monthLabel=monthStart.toLocaleDateString('it-IT',{month:'long',year:'numeric'});
+  doc.setFont('helvetica','bold');doc.setFontSize(15);doc.text('REGISTRO MENSILE TEMPERATURE',margin,11);
+  doc.setFontSize(10);doc.text((store?.name||'Punto vendita')+' - '+(store?.address||''),margin,17);
+  doc.setFont('helvetica','normal');doc.setFontSize(9);doc.text('Mese: '+monthLabel,margin,23);
+  doc.setFontSize(7);doc.text('Valori in °C · Celle vuote: controllo non registrato · Data di registrazione riportata senza orario',margin,27);
+  let y=top;
+  const headerH=20;
+  doc.setFillColor(225,235,229);doc.rect(margin,y,pageW-2*margin,headerH,'F');
+  doc.setDrawColor(135,153,143);doc.setLineWidth(.2);
+  doc.rect(margin,y,dateW,headerH);
+  doc.setFont('helvetica','bold');doc.setFontSize(7);doc.text('GIORNO',margin+dateW/2,y+headerH/2+1,{align:'center'});
+  eq.forEach((item,i)=>{
+    const x=margin+dateW+i*colW;doc.rect(x,y,colW,headerH);
+    const lines=doc.splitTextToSize(item.name||'',Math.max(8,colW-2));
+    doc.setFontSize(Math.min(7,Math.max(4.5,7-(lines.length>3?1:0))));
+    doc.text(lines.slice(0,4),x+colW/2,y+headerH/2-(Math.min(lines.length,4)-1)*1.5,{align:'center'});
+  });
+  y+=headerH;
+  const values=new Map();
+  for(const c of checks){
+    const d=new Date(c.checked_at);
+    const key=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+    values.set(key+'|'+c.equipment_id,c.measured_temperature_c);
+  }
+  for(let day=1;day<=days;day++){
+    const dateKey=year+'-'+String(monthNum).padStart(2,'0')+'-'+String(day).padStart(2,'0');
+    const rowY=y+(day-1)*rowH;
+    doc.setFillColor(day%2?255:247,day%2?255:250,day%2?255:247);
+    doc.rect(margin,rowY,pageW-2*margin,rowH,'F');
+    doc.setDrawColor(165,178,169);doc.rect(margin,rowY,dateW,rowH);
+    doc.setFont('helvetica','bold');doc.setFontSize(7);doc.text(String(day).padStart(2,'0')+'/'+String(monthNum).padStart(2,'0'),margin+dateW/2,rowY+rowH/2+1,{align:'center'});
+    eq.forEach((item,i)=>{
+      const x=margin+dateW+i*colW;doc.rect(x,rowY,colW,rowH);
+      const val=values.get(dateKey+'|'+item.id);
+      if(val!==undefined&&val!==null){doc.setFont('helvetica','normal');doc.setFontSize(7);doc.text(String(val)+' °C',x+colW/2,rowY+rowH/2+1,{align:'center'})}
+    });
+  }
+  const fileStore=(store?.name||'punto-vendita').replace(/[^a-z0-9]+/gi,'-');
+  doc.save('HACCP-temperature-'+month+'-'+fileStore+'.pdf');
+  msg('PDF mensile generato in un’unica pagina. Gli orari completi restano conservati nel database.','ok');
+ }catch(e){msg('Errore nella creazione del PDF: '+(e.message||e),'error')}
  finally{$('exportMonthPdf').disabled=false;$('exportMonthPdf').textContent='Scarica registro mensile PDF'}
 };
+
 await authChanged();db.auth.onAuthStateChange((event)=>{if(event!=='PASSWORD_RECOVERY')authChanged()});
 </script></body></html>
