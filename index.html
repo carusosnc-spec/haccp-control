@@ -44,7 +44,7 @@
 </div>
 </div>
 <div id="tab-clean" class="tabContent hidden"><div class="panel"><h2>Registro pulizie giornaliere</h2><p class="muted">Seleziona lo stato solo dopo aver verificato l'attività.</p><div id="cleaningList"></div></div></div>
-<div id="tab-history" class="tabContent hidden"><div class="panel"><h2>Storico controlli</h2><div class="actions"><button id="exportTemp" class="secondary">Esporta temperature CSV</button><button id="exportClean" class="secondary">Esporta pulizie CSV</button></div><div id="historyList"></div></div></div>
+<div id="tab-history" class="tabContent hidden"><div class="panel"><h2>Storico controlli</h2><div class="grid"><div class="field"><label>Archivio mensile</label><input type="month" id="historyMonth"></div><div class="field"><label>Esportazione</label><button id="exportMonthPdf">Scarica registro mensile PDF</button></div></div><div class="actions"><button id="exportTemp" class="secondary">Esporta temperature CSV</button><button id="exportClean" class="secondary">Esporta pulizie CSV</button></div><div id="historyList"></div></div></div>
 <div id="tab-admin" class="tabContent hidden"><div class="panel"><h2>Gestione</h2><p class="muted">Area amministratore. Gestione utenti, sedi, attrezzature e attività sarà resa disponibile dopo l'attivazione dell'account admin e la verifica delle procedure.</p><div id="adminInfo"></div></div></div>
 </section>
 </main><div class="foot">HACCP CONTROL · Registrazioni tracciate per utente e punto vendita</div>
@@ -114,6 +114,7 @@ $('confirmStoreTemps').onclick=async()=>{
  $('confirmStoreTemps').disabled=true;$('tempProgress').textContent='Registrazione in corso…';
  const r=await confirmStoreTemperatures(currentStore);
  if(r.error)msg('Errore: '+r.error,'error');else msg('Registrate '+r.saved+' temperature.','ok');
+ $('tempProgress').textContent=r.error?'Operazione non completata: '+r.error:'Operazione conclusa: '+r.saved+' temperature registrate.';
  await refreshStore();
 };
 $('confirmAllStoresTemps').onclick=async()=>{
@@ -129,8 +130,54 @@ $('confirmAllStoresTemps').onclick=async()=>{
 async function loadCleaning(){const a=await db.from('cleaning_areas').select('id,name,sort_order').eq('store_id',currentStore).eq('active',true).order('sort_order');const tasks=await db.from('cleaning_tasks').select('id,name,instructions,area_id,cleaning_areas(name)').eq('store_id',currentStore).eq('active',true).order('sort_order');const today=new Date().toLocaleDateString('en-CA');const done=await db.from('cleaning_records').select('task_id,status,notes').eq('store_id',currentStore).eq('check_date',today);const map=new Map((done.data||[]).map(x=>[x.task_id,x]));
 $('cleaningList').innerHTML=(a.data||[]).map(area=>'<h3>'+area.name+'</h3>'+ (tasks.data||[]).filter(t=>t.area_id===area.id).map(t=>{const d=map.get(t.id);return '<div class="item"><div><b>'+t.name+'</b><small>'+(t.instructions||'')+'</small></div><select data-task="'+t.id+'"><option value="">Da verificare</option><option value="completed" '+(d?.status==='completed'?'selected':'')+'>Completata</option><option value="not_completed" '+(d?.status==='not_completed'?'selected':'')+'>Non completata</option><option value="not_applicable" '+(d?.status==='not_applicable'?'selected':'')+'>Non applicabile</option></select></div>'}).join('')).join('')||'<p class="muted">Checklist non ancora configurata per questa sede.</p>';
 document.querySelectorAll('[data-task]').forEach(sel=>sel.onchange=async()=>{if(!sel.value)return;const taskId=sel.dataset.task;const existing=map.get(taskId);let q;if(existing){q=await db.from('cleaning_records').update({status:sel.value,performed_by:user.id,performed_at:new Date().toISOString()}).eq('store_id',currentStore).eq('task_id',taskId).eq('check_date',today)}else{q=await db.from('cleaning_records').insert({store_id:currentStore,task_id:taskId,performed_by:user.id,check_date:today,status:sel.value})}if(q.error)msg(q.error.message,'error');else msg('Stato pulizia aggiornato.','ok');await refreshStore()})}
-async function loadHistory(){const t=await db.from('temperature_checks').select('checked_at,measured_temperature_c,method,notes,equipment(name)').eq('store_id',currentStore).order('checked_at',{ascending:false}).limit(40);const c=await db.from('cleaning_records').select('performed_at,check_date,status,notes,cleaning_tasks(name)').eq('store_id',currentStore).order('check_date',{ascending:false}).limit(40);window.tempRows=t.data||[];window.cleanRows=c.data||[];$('historyList').innerHTML='<h3>Temperature</h3>'+window.tempRows.map(x=>'<div class="item"><div><b>'+x.equipment?.name+'</b><small>'+new Date(x.checked_at).toLocaleString('it-IT')+' · '+x.method+'</small></div><b>'+x.measured_temperature_c+' °C</b></div>').join('')+'<h3>Pulizie</h3>'+window.cleanRows.map(x=>'<div class="item"><div><b>'+x.cleaning_tasks?.name+'</b><small>'+x.check_date+'</small></div><span class="tag">'+x.status+'</span></div>').join('')}
-$('exportTemp').onclick=()=>csv('temperature-'+currentStore+'.csv',(window.tempRows||[]).map(x=>({data_ora:x.checked_at,attrezzatura:x.equipment?.name,temperatura:x.measured_temperature_c,metodo:x.method,note:x.notes})));
-$('exportClean').onclick=()=>csv('pulizie-'+currentStore+'.csv',(window.cleanRows||[]).map(x=>({data:x.check_date,attivita:x.cleaning_tasks?.name,stato:x.status,note:x.notes})));
+
+function selectedMonthRange(){
+ const value=$('historyMonth').value||localDay().slice(0,7);const [y,m]=value.split('-').map(Number);
+ return {value,start:new Date(y,m-1,1).toISOString(),end:new Date(y,m,1).toISOString(),startDay:value+'-01',endDay:new Date(y,m,0).getDate().toString().padStart(2,'0')};
+}
+async function fetchAll(query){
+ let all=[],from=0,step=500;
+ while(true){const r=await query.range(from,from+step-1);if(r.error)throw r.error;all=all.concat(r.data||[]);if(!r.data||r.data.length<step)break;from+=step}
+ return all;
+}
+async function loadHistory(){
+ if(!$('historyMonth').value)$('historyMonth').value=localDay().slice(0,7);
+ const range=selectedMonthRange();$('historyList').textContent='Caricamento archivio…';
+ try{
+  window.tempRows=await fetchAll(db.from('temperature_checks').select('checked_at,measured_temperature_c,method,notes,equipment(name)').eq('store_id',currentStore).gte('checked_at',range.start).lt('checked_at',range.end).order('checked_at',{ascending:true}));
+  window.cleanRows=await fetchAll(db.from('cleaning_records').select('performed_at,check_date,status,notes,cleaning_tasks(name)').eq('store_id',currentStore).gte('check_date',range.startDay).lte('check_date',range.value+'-'+range.endDay).order('check_date',{ascending:true}));
+  $('historyList').innerHTML='<h3>Temperature ('+window.tempRows.length+')</h3>'+window.tempRows.map(x=>'<div class="item"><div><b>'+x.equipment?.name+'</b><small>'+new Date(x.checked_at).toLocaleString('it-IT')+' · '+x.method+'</small></div><b>'+x.measured_temperature_c+' °C</b></div>').join('')+'<h3>Pulizie ('+window.cleanRows.length+')</h3>'+window.cleanRows.map(x=>'<div class="item"><div><b>'+x.cleaning_tasks?.name+'</b><small>'+x.check_date+'</small></div><span class="tag">'+x.status+'</span></div>').join('')||'<p class="muted">Nessuna registrazione nel mese selezionato.</p>';
+  if(!window.tempRows.length&&!window.cleanRows.length)$('historyList').innerHTML='<p class="muted">Nessuna registrazione nel mese selezionato.</p>';
+ }catch(e){$('historyList').textContent='Errore nel caricamento dello storico: '+e.message}
+}
+$('historyMonth').onchange=loadHistory;
+$('exportTemp').onclick=()=>csv('temperature-'+currentStore+'-'+($('historyMonth').value||localDay().slice(0,7))+'.csv',(window.tempRows||[]).map(x=>({data_ora:x.checked_at,attrezzatura:x.equipment?.name,temperatura:x.measured_temperature_c,metodo:x.method,note:x.notes})));
+$('exportClean').onclick=()=>csv('pulizie-'+currentStore+'-'+($('historyMonth').value||localDay().slice(0,7))+'.csv',(window.cleanRows||[]).map(x=>({data:x.check_date,attivita:x.cleaning_tasks?.name,stato:x.status,note:x.notes})));
+$('exportMonthPdf').onclick=async()=>{
+ const store=stores.find(x=>x.id===currentStore);const month=$('historyMonth').value||localDay().slice(0,7);
+ $('exportMonthPdf').disabled=true;$('exportMonthPdf').textContent='Preparazione PDF…';
+ try{
+  if(!window.tempRows||!window.cleanRows)await loadHistory();
+  const {jsPDF}=await import('https://cdn.jsdelivr.net/npm/jspdf@2.5.2/+esm');
+  const doc=new jsPDF({orientation:'landscape',unit:'mm',format:'a4'});
+  const left=12;let y=15;
+  const addPageIfNeeded=()=>{if(y>185){doc.addPage();y=15}};
+  const line=(text,size=9,bold=false)=>{doc.setFont('helvetica',bold?'bold':'normal');doc.setFontSize(size);const lines=doc.splitTextToSize(String(text??''),270);doc.text(lines,left,y);y+=lines.length*(size*0.42)+2;addPageIfNeeded()};
+  const titleMonth=new Date(Number(month.slice(0,4)),Number(month.slice(5,7))-1,1).toLocaleDateString('it-IT',{month:'long',year:'numeric'});
+  line('HACCP CONTROL - REGISTRO MENSILE',16,true);line((store?.name||'Punto vendita')+' - '+(store?.address||''),11,true);line('Mese: '+titleMonth,10);line('Documento generato il '+new Date().toLocaleString('it-IT'),8);y+=3;
+  line('REGISTRO TEMPERATURE ('+(window.tempRows||[]).length+' registrazioni)',12,true);
+  const cols=[12,65,95,130,165,205,270];let rowH=7;
+  const tableRow=(vals,header=false)=>{addPageIfNeeded();doc.setFont('helvetica',header?'bold':'normal');doc.setFontSize(8);if(header)doc.setFillColor(226,237,230);if(header)doc.rect(left,y-4,273,rowH,'F');let x=cols[0];vals.forEach((v,i)=>{doc.text(doc.splitTextToSize(String(v??''),cols[i+1]-cols[i]-2)[0]||'',x+1,y);x=cols[i+1]});y+=rowH};
+  tableRow(['Data e ora','Attrezzatura','Temperatura','Metodo','Note'],true);
+  for(const r of (window.tempRows||[]))tableRow([new Date(r.checked_at).toLocaleString('it-IT'),r.equipment?.name,(r.measured_temperature_c??'')+' °C',r.method,r.notes||'']);
+  y+=5;addPageIfNeeded();line('REGISTRO PULIZIE ('+(window.cleanRows||[]).length+' registrazioni)',12,true);
+  tableRow(['Data','Attività','Stato','Note'],true);
+  for(const r of (window.cleanRows||[]))tableRow([r.check_date,r.cleaning_tasks?.name,r.status,r.notes||'']);
+  const pages=doc.internal.getNumberOfPages();for(let i=1;i<=pages;i++){doc.setPage(i);doc.setFontSize(8);doc.text('HACCP CONTROL - '+(store?.name||'')+' - Pagina '+i+'/'+pages,280,202,{align:'right'})}
+  doc.save('HACCP-'+month+'-'+(store?.name||'punto-vendita').replace(/[^a-z0-9]+/gi,'-')+'.pdf');
+  msg('PDF mensile generato. Le registrazioni restano archiviate nello storico.','ok');
+ }catch(e){msg('Errore nella creazione del PDF: '+e.message,'error')}
+ finally{$('exportMonthPdf').disabled=false;$('exportMonthPdf').textContent='Scarica registro mensile PDF'}
+};
 await authChanged();db.auth.onAuthStateChange((event)=>{if(event!=='PASSWORD_RECOVERY')authChanged()});
 </script></body></html>
