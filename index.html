@@ -44,7 +44,7 @@
 </div>
 </div>
 <div id="tab-clean" class="tabContent hidden"><div class="panel"><h2>Registro pulizie giornaliere</h2><p class="muted">Registra le attività solo dopo aver verificato che siano state realmente eseguite.</p><div class="actions"><button id="confirmStoreCleaning">Conferma tutte le pulizie di questo punto vendita</button><button id="confirmAllStoresCleaning" class="secondary hidden">Conferma tutte le pulizie di tutti i punti vendita</button></div><div id="cleanProgress" class="muted" style="margin:10px 0"></div><div id="cleaningList"></div></div></div>
-<div id="tab-history" class="tabContent hidden"><div class="panel"><h2>Storico controlli</h2><div class="grid"><div class="field"><label>Archivio mensile</label><input type="month" id="historyMonth"></div><div class="field"><label>Esportazione PDF</label><div class="actions"><button id="exportTempPdf">PDF temperature A4</button><button id="exportCleaningPdf" class="secondary">PDF pulizie A4</button></div></div></div><div class="actions"><button id="exportTemp" class="secondary">Esporta temperature CSV</button><button id="exportClean" class="secondary">Esporta pulizie CSV</button></div><div id="historyList"></div></div></div>
+<div id="tab-history" class="tabContent hidden"><div class="panel"><h2>Storico controlli</h2><div class="grid"><div class="field"><label>Archivio mensile</label><input type="month" id="historyMonth"></div><div class="field"><label>Esportazione PDF</label><div class="actions"><button id="exportTempPdf">PDF temperature A4</button><button id="exportCleaningPdf" class="secondary">PDF pulizie A4</button></div></div></div><div class="actions"><button id="exportTemp" class="secondary">Esporta temperature CSV</button><button id="exportClean" class="secondary">Esporta pulizie CSV</button></div><div class="notice" style="margin-top:14px"><b>Anteprima registri (fac-simile)</b><p style="margin:6px 0">Genera PDF dimostrativi con date di apertura, senza inserire dati nello storico ufficiale. I dati di esempio saranno identificati nel documento.</p><label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="previewMode" style="width:auto"> Attiva anteprima fac-simile per i PDF del mese selezionato</label></div><div id="historyList"></div></div></div>
 <div id="tab-admin" class="tabContent hidden"><div class="panel"><h2>Gestione</h2><p class="muted">Area amministratore. Gestione utenti, sedi, attrezzature e attività sarà resa disponibile dopo l'attivazione dell'account admin e la verifica delle procedure.</p><div id="adminInfo"></div></div></div>
 </section>
 </main><div class="foot">HACCP CONTROL · Registrazioni tracciate per utente e punto vendita</div>
@@ -183,6 +183,24 @@ async function loadCleaning(){const a=await db.from('cleaning_areas').select('id
 $('cleaningList').innerHTML=(a.data||[]).map(area=>'<h3>'+area.name+'</h3>'+ (tasks.data||[]).filter(t=>t.area_id===area.id).map(t=>{const d=map.get(t.id);return '<div class="item"><div><b>'+t.name+'</b><small>'+(t.instructions||'')+'</small></div><select data-task="'+t.id+'"><option value="">Da verificare</option><option value="completed" '+(d?.status==='completed'?'selected':'')+'>Completata</option><option value="not_completed" '+(d?.status==='not_completed'?'selected':'')+'>Non completata</option><option value="not_applicable" '+(d?.status==='not_applicable'?'selected':'')+'>Non applicabile</option></select></div>'}).join('')).join('')||'<p class="muted">Checklist non ancora configurata per questa sede.</p>';
 document.querySelectorAll('[data-task]').forEach(sel=>sel.onchange=async()=>{if(!sel.value)return;const taskId=sel.dataset.task;const existing=map.get(taskId);let q;if(existing){q=await db.from('cleaning_records').update({status:sel.value,performed_by:user.id,performed_at:new Date().toISOString()}).eq('store_id',currentStore).eq('task_id',taskId).eq('check_date',today)}else{q=await db.from('cleaning_records').insert({store_id:currentStore,task_id:taskId,performed_by:user.id,check_date:today,status:sel.value})}if(q.error)msg(q.error.message,'error');else msg('Stato pulizia aggiornato.','ok');await refreshStore()})}
 
+
+function easterSunday(year){
+ const a=year%19,b=Math.floor(year/100),c=year%100,d=Math.floor(b/4),e=b%4,f=Math.floor((b+8)/25),g=Math.floor((b-f+1)/3),h=(19*a+b-d-g+15)%30,i=Math.floor(c/4),k=c%4,l=(32+2*e+2*i-h-k)%7,n=Math.floor((a+11*h+22*l)/451),month=Math.floor((h+l-7*n+114)/31),day=((h+l-7*n+114)%31)+1;
+ return new Date(year,month-1,day);
+}
+function demoOpenDays(year,monthNum,days){
+ const easter=easterSunday(year), easterMonday=new Date(year,easter.getMonth(),easter.getDate()+1);
+ const fixed=new Set(['01-01','01-06','04-25','05-01','06-02','08-15','11-01','12-08','12-25','12-26']);
+ const cap=new Date(year,monthNum-1,days);
+ if(year===new Date().getFullYear()&&monthNum===new Date().getMonth()+1&&cap>new Date(year,monthNum-1,new Date().getDate()-1))cap.setDate(new Date().getDate()-1);
+ const out=[];
+ for(let d=1;d<=days;d++){const date=new Date(year,monthNum-1,d),key=String(monthNum).padStart(2,'0')+'-'+String(d).padStart(2,'0');
+  if(date>cap||date.getDay()===0||fixed.has(key)||(date.getFullYear()===easterMonday.getFullYear()&&date.getMonth()===easterMonday.getMonth()&&date.getDate()===easterMonday.getDate()))continue;
+  out.push(year+'-'+key);
+ }
+ return out;
+}
+
 function selectedMonthRange(){
  const value=$('historyMonth').value||localDay().slice(0,7);const [y,m]=value.split('-').map(Number);
  return {value,start:new Date(y,m-1,1).toISOString(),end:new Date(y,m,1).toISOString(),startDay:value+'-01',endDay:new Date(y,m,0).getDate().toString().padStart(2,'0')};
@@ -212,19 +230,22 @@ $('exportTempPdf').onclick=async()=>{
  try{
   const [year,monthNum]=month.split('-').map(Number),monthStart=new Date(year,monthNum-1,1),monthEnd=new Date(year,monthNum,1);
   const [eqResult,checkResult]=await Promise.all([
-   db.from('equipment').select('id,name,sort_order').eq('store_id',currentStore).eq('active',true).order('sort_order'),
+   db.from('equipment').select('id,name,sort_order,reference_temperature_c').eq('store_id',currentStore).eq('active',true).order('sort_order'),
    fetchAll(db.from('temperature_checks').select('equipment_id,checked_at,measured_temperature_c').eq('store_id',currentStore).gte('checked_at',monthStart.toISOString()).lt('checked_at',monthEnd.toISOString()).order('checked_at',{ascending:true}))
   ]);
   if(eqResult.error)throw eqResult.error;
-  const eq=eqResult.data||[],checks=checkResult||[],days=new Date(year,monthNum,0).getDate();
+  const eq=eqResult.data||[],days=new Date(year,monthNum,0).getDate();
+  const preview=$('previewMode').checked;
+  const openDays=preview?demoOpenDays(year,monthNum,days):[];
+  const checks=preview?openDays.flatMap(date=>eq.filter(item=>item.reference_temperature_c!==null).map(item=>({equipment_id:item.id,checked_at:date+'T10:00:00',measured_temperature_c:item.reference_temperature_c}))):(checkResult||[]);
   const {jsPDF}=await import('https://cdn.jsdelivr.net/npm/jspdf@2.5.2/+esm');
   const doc=new jsPDF({orientation:'landscape',unit:'mm',format:'a4'});
   const W=297,H=210,m=7,dateW=18,top=29,bottom=7,headerH=19;
   const colW=(W-2*m-dateW)/(eq.length||1),rowH=Math.min(4.9,(H-top-bottom-headerH)/days);
   const monthLabel=monthStart.toLocaleDateString('it-IT',{month:'long',year:'numeric'});
-  doc.setFont('helvetica','bold');doc.setFontSize(13);doc.text('REGISTRO MENSILE TEMPERATURE',m,10);
+  doc.setFont('helvetica','bold');doc.setFontSize(13);doc.text(preview?'FAC-SIMILE · ANTEPRIMA DIMOSTRATIVA':'REGISTRO MENSILE TEMPERATURE',m,10);
   doc.setFontSize(8);doc.text((store?.name||'Punto vendita')+' - '+(store?.address||''),m,16);
-  doc.setFont('helvetica','normal');doc.setFontSize(8);doc.text('Mese: '+monthLabel+'   |   Valori in °C',m,22);
+  doc.setFont('helvetica','normal');doc.setFontSize(8);doc.text('Mese: '+monthLabel+'   |   Valori in °C'+(preview?'   |   DATI DI ESEMPIO NON REGISTRATI':'') ,m,22);
   let y=top;doc.setFillColor(225,235,229);doc.rect(m,y,W-2*m,headerH,'F');
   doc.setDrawColor(135,153,143);doc.setLineWidth(.15);doc.rect(m,y,dateW,headerH);
   doc.setFont('helvetica','bold');doc.setFontSize(6);doc.text('GIORNO',m+dateW/2,y+headerH/2+1,{align:'center'});
@@ -255,14 +276,16 @@ $('exportCleaningPdf').onclick=async()=>{
    fetchAll(db.from('cleaning_records').select('task_id,check_date,status,performed_by').eq('store_id',currentStore).gte('check_date',startDay).lte('check_date',endDay).order('check_date',{ascending:true}))
   ]);
   if(taskResult.error)throw taskResult.error;
-  const tasks=taskResult.data||[],records=cleanResult||[],ids=[...new Set(records.map(x=>x.performed_by).filter(Boolean))];
+  const tasks=taskResult.data||[],preview=$('previewMode').checked,openDays=preview?demoOpenDays(year,monthNum,days):[];
+  const records=preview?openDays.flatMap(date=>tasks.map(t=>({task_id:t.id,check_date:date,status:'completed',performed_by:user.id}))):(cleanResult||[]);
+  const ids=[...new Set(records.map(x=>x.performed_by).filter(Boolean))];
   let people=[];if(ids.length){const p=await db.from('profiles').select('id,operator_code').in('id',ids);if(p.error)throw p.error;people=p.data||[]}
   const personMap=new Map(people.map(x=>[x.id,x.operator_code||'Operatore']));
   const {jsPDF}=await import('https://cdn.jsdelivr.net/npm/jspdf@2.5.2/+esm');
   const doc=new jsPDF({orientation:'landscape',unit:'mm',format:'a4'});
   const W=297,H=210,m=7,monthLabel=new Date(year,monthNum-1,1).toLocaleDateString('it-IT',{month:'long',year:'numeric'});
   const ordered=tasks.slice().sort((a,b)=>(a.cleaning_areas?.sort_order??99)-(b.cleaning_areas?.sort_order??99)||(a.sort_order??0)-(b.sort_order??0));
-  doc.setFont('helvetica','bold');doc.setFontSize(12);doc.text('SCHEDA MENSILE DI PULIZIA E SANIFICAZIONE',m,10);
+  doc.setFont('helvetica','bold');doc.setFontSize(12);doc.text(preview?'FAC-SIMILE · ANTEPRIMA DIMOSTRATIVA':'SCHEDA MENSILE DI PULIZIA E SANIFICAZIONE',m,10);
   doc.setFontSize(8);doc.text((store?.name||'Punto vendita')+' - '+(store?.address||''),m,16);
   doc.setFont('helvetica','normal');doc.setFontSize(7.5);doc.text('Mese: '+monthLabel+'   |   Frequenza prevista: giornaliera   |   Trattamento: pulizia e sanificazione',m,22);
   const dayCol=11,operatorCol=29,tableW=W-2*m,taskW=(tableW-dayCol-operatorCol)/Math.max(1,ordered.length);
