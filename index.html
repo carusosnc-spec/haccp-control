@@ -243,9 +243,9 @@ $('exportTempPdf').onclick=async()=>{
   const W=297,H=210,m=7,dateW=18,top=29,bottom=7,headerH=19;
   const colW=(W-2*m-dateW)/(eq.length||1),rowH=Math.min(4.9,(H-top-bottom-headerH)/days);
   const monthLabel=monthStart.toLocaleDateString('it-IT',{month:'long',year:'numeric'});
-  doc.setFont('helvetica','bold');doc.setFontSize(13);doc.text(preview?'FAC-SIMILE · ANTEPRIMA DIMOSTRATIVA':'REGISTRO MENSILE TEMPERATURE',m,10);
+  doc.setFont('helvetica','bold');doc.setFontSize(13);doc.text(preview?'ANTEPRIMA':'REGISTRO MENSILE TEMPERATURE',m,10);
   doc.setFontSize(8);doc.text((store?.name||'Punto vendita')+' - '+(store?.address||''),m,16);
-  doc.setFont('helvetica','normal');doc.setFontSize(8);doc.text('Mese: '+monthLabel+'   |   Valori in °C'+(preview?'   |   DATI DI ESEMPIO NON REGISTRATI':'') ,m,22);
+  doc.setFont('helvetica','normal');doc.setFontSize(8);doc.text('Mese: '+monthLabel+'   |   Valori in °C'+(preview?'':'') ,m,22);
   let y=top;doc.setFillColor(225,235,229);doc.rect(m,y,W-2*m,headerH,'F');
   doc.setDrawColor(135,153,143);doc.setLineWidth(.15);doc.rect(m,y,dateW,headerH);
   doc.setFont('helvetica','bold');doc.setFontSize(6);doc.text('GIORNO',m+dateW/2,y+headerH/2+1,{align:'center'});
@@ -285,7 +285,7 @@ $('exportCleaningPdf').onclick=async()=>{
   const doc=new jsPDF({orientation:'landscape',unit:'mm',format:'a4'});
   const W=297,H=210,m=7,monthLabel=new Date(year,monthNum-1,1).toLocaleDateString('it-IT',{month:'long',year:'numeric'});
   const ordered=tasks.slice().sort((a,b)=>(a.cleaning_areas?.sort_order??99)-(b.cleaning_areas?.sort_order??99)||(a.sort_order??0)-(b.sort_order??0));
-  doc.setFont('helvetica','bold');doc.setFontSize(12);doc.text(preview?'FAC-SIMILE · ANTEPRIMA DIMOSTRATIVA':'SCHEDA MENSILE DI PULIZIA E SANIFICAZIONE',m,10);
+  doc.setFont('helvetica','bold');doc.setFontSize(12);doc.text(preview?'ANTEPRIMA':'SCHEDA MENSILE DI PULIZIA E SANIFICAZIONE',m,10);
   doc.setFontSize(8);doc.text((store?.name||'Punto vendita')+' - '+(store?.address||''),m,16);
   doc.setFont('helvetica','normal');doc.setFontSize(7.5);doc.text('Mese: '+monthLabel+'   |   Frequenza prevista: giornaliera   |   Trattamento: pulizia e sanificazione',m,22);
   const dayCol=11,operatorCol=29,tableW=W-2*m,taskW=(tableW-dayCol-operatorCol)/Math.max(1,ordered.length);
