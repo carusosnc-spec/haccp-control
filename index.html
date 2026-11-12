@@ -43,7 +43,7 @@
 <div class="panel"><h2>Controllo temperature</h2><p class="muted">Valori di riferimento registrati dalle schede aziendali: verificarli con il piano HACCP prima di considerarli limiti ufficiali.</p><div class="temp-actions"><button id="confirmStoreTemps">Conferma tutte le temperature di questo punto vendita</button><button id="confirmAllStoresTemps" class="secondary hidden">Conferma tutti i punti vendita</button></div><div id="tempProgress" class="muted"></div><div id="equipmentList"></div>
 </div>
 </div>
-<div id="tab-clean" class="tabContent hidden"><div class="panel"><h2>Registro pulizie giornaliere</h2><p class="muted">Seleziona lo stato solo dopo aver verificato l'attività.</p><div id="cleaningList"></div></div></div>
+<div id="tab-clean" class="tabContent hidden"><div class="panel"><h2>Registro pulizie giornaliere</h2><p class="muted">Registra le attività solo dopo aver verificato che siano state realmente eseguite.</p><div class="actions"><button id="confirmStoreCleaning">Conferma tutte le pulizie di questo punto vendita</button><button id="confirmAllStoresCleaning" class="secondary hidden">Conferma tutte le pulizie di tutti i punti vendita</button></div><div id="cleanProgress" class="muted" style="margin:10px 0"></div><div id="cleaningList"></div></div></div>
 <div id="tab-history" class="tabContent hidden"><div class="panel"><h2>Storico controlli</h2><div class="grid"><div class="field"><label>Archivio mensile</label><input type="month" id="historyMonth"></div><div class="field"><label>Esportazione</label><button id="exportMonthPdf">Scarica registro mensile PDF</button></div></div><div class="actions"><button id="exportTemp" class="secondary">Esporta temperature CSV</button><button id="exportClean" class="secondary">Esporta pulizie CSV</button></div><div id="historyList"></div></div></div>
 <div id="tab-admin" class="tabContent hidden"><div class="panel"><h2>Gestione</h2><p class="muted">Area amministratore. Gestione utenti, sedi, attrezzature e attività sarà resa disponibile dopo l'attivazione dell'account admin e la verifica delle procedure.</p><div id="adminInfo"></div></div></div>
 </section>
@@ -68,7 +68,7 @@ async function loadApp(){const p=await db.from('profiles').select('full_name,rol
 const s=await db.from('stores').select('id,name,address,has_temperature_checks').eq('active',true).order('name');if(s.error){msg(s.error.message,'error');return}stores=s.data||[];
 if(profile.role==='admin'){currentStore=stores[0]?.id; $('storePickerWrap').classList.remove('hidden');$('storePicker').innerHTML=stores.map(x=>'<option value="'+x.id+'">'+x.name+' — '+x.address+'</option>').join('');$('adminTab').classList.remove('hidden')}
 else{const a=await db.from('user_stores').select('store_id,stores(id,name,address,has_temperature_checks)').eq('user_id',user.id);stores=(a.data||[]).map(x=>x.stores).filter(Boolean);currentStore=stores[0]?.id;$('storePickerWrap').classList.toggle('hidden',stores.length<2);$('storePicker').innerHTML=stores.map(x=>'<option value="'+x.id+'">'+x.name+'</option>').join('')}
-$('hello').textContent=(profile.full_name||user.email)+' · '+profile.role;$('confirmAllStoresTemps').classList.toggle('hidden',profile.role!=='admin');$('loginView').classList.add('hidden');$('appView').classList.remove('hidden');$('logout').classList.remove('hidden');$('storePicker').value=currentStore||'';await refreshStore()}
+$('hello').textContent=(profile.full_name||user.email)+' · '+profile.role;$('confirmAllStoresTemps').classList.toggle('hidden',profile.role!=='admin');$('confirmAllStoresCleaning').classList.toggle('hidden',profile.role!=='admin');$('loginView').classList.add('hidden');$('appView').classList.remove('hidden');$('logout').classList.remove('hidden');$('storePicker').value=currentStore||'';await refreshStore()}
 $('storePicker').onchange=async()=>{currentStore=$('storePicker').value;await refreshStore()};
 document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{document.querySelectorAll('[data-tab]').forEach(x=>x.classList.toggle('active',x===b));document.querySelectorAll('.tabContent').forEach(x=>x.classList.toggle('hidden',x.id!=='tab-'+b.dataset.tab));if(b.dataset.tab==='history')loadHistory()});
 async function refreshStore(){const s=stores.find(x=>x.id===currentStore);if(!s){$('storeTitle').textContent='Nessun punto vendita assegnato';return}$('storeTitle').textContent=s.name+' · '+s.address;
@@ -125,6 +125,58 @@ $('confirmAllStoresTemps').onclick=async()=>{
  for(const store of stores){const r=await confirmStoreTemperatures(store.id);saved+=r.saved;if(r.error)errors.push(store.name+': '+r.error)}
  $('confirmAllStoresTemps').disabled=false;
  msg(errors.length?'Registrate '+saved+' temperature. Errori: '+errors.join(' · '):'Operazione completata: '+saved+' temperature registrate.',''+(errors.length?'error':'ok'));
+ await refreshStore();
+};
+
+async function registerCleaningForStore(storeId){
+ const tasksResult=await db.from('cleaning_tasks').select('id').eq('store_id',storeId).eq('active',true);
+ if(tasksResult.error)return {saved:0,skipped:0,error:tasksResult.error.message};
+ const taskIds=(tasksResult.data||[]).map(x=>x.id);
+ if(!taskIds.length)return {saved:0,skipped:0,error:null,empty:true};
+ const today=localDay();
+ const existing=await db.from('cleaning_records').select('task_id').eq('store_id',storeId).eq('check_date',today).in('task_id',taskIds);
+ if(existing.error)return {saved:0,skipped:0,error:existing.error.message};
+ const already=new Set((existing.data||[]).map(x=>x.task_id));
+ const rows=taskIds.filter(id=>!already.has(id)).map(task_id=>({
+  store_id:storeId,task_id,performed_by:user.id,performed_at:new Date().toISOString(),check_date:today,status:'completed'
+ }));
+ if(!rows.length)return {saved:0,skipped:already.size,error:null};
+ const ins=await db.from('cleaning_records').insert(rows);
+ return {saved:ins.error?0:rows.length,skipped:already.size,error:ins.error?.message||null};
+}
+$('confirmStoreCleaning').onclick=async()=>{
+ if(!currentStore)return;
+ const tasks=await db.from('cleaning_tasks').select('id',{count:'exact',head:true}).eq('store_id',currentStore).eq('active',true);
+ if(tasks.error){msg('Errore: '+tasks.error.message,'error');return}
+ if(!tasks.count){msg('Non ci sono attività di pulizia configurate per questo punto vendita. Prima bisogna completare la checklist.','error');return}
+ if(!window.confirm('Confermi che TUTTE le '+tasks.count+' attività di pulizia di questo punto vendita sono state realmente eseguite oggi?'))return;
+ $('confirmStoreCleaning').disabled=true;$('cleanProgress').textContent='Registrazione pulizie in corso…';
+ const r=await registerCleaningForStore(currentStore);
+ $('confirmStoreCleaning').disabled=false;
+ if(r.error)msg('Errore nella registrazione: '+r.error,'error');
+ else msg('Pulizie registrate: '+r.saved+'. Attività già registrate e lasciate invariate: '+r.skipped+'.','ok');
+ $('cleanProgress').textContent=r.error?'Operazione non completata: '+r.error:'Operazione conclusa: '+r.saved+' attività registrate.';
+ await refreshStore();
+};
+$('confirmAllStoresCleaning').onclick=async()=>{
+ if(profile.role!=='admin')return;
+ const counts=await Promise.all(stores.map(async s=>{
+  const r=await db.from('cleaning_tasks').select('id',{count:'exact',head:true}).eq('store_id',s.id).eq('active',true);
+  return {store:s,count:r.count||0,error:r.error?.message};
+ }));
+ if(counts.some(x=>x.error)){msg('Impossibile verificare le checklist: '+counts.filter(x=>x.error).map(x=>x.store.name+': '+x.error).join(' · '),'error');return}
+ const total=counts.reduce((n,x)=>n+x.count,0);
+ if(!total){msg('Non ci sono attività di pulizia configurate nelle sedi. Prima bisogna completare le checklist.','error');return}
+ if(!window.confirm('Confermi che TUTTE le '+total+' attività di pulizia di TUTTI i punti vendita sono state realmente eseguite oggi?'))return;
+ $('confirmAllStoresCleaning').disabled=true;$('cleanProgress').textContent='Registrazione pulizie di tutte le sedi in corso…';
+ let saved=0,skipped=0,empty=[],errors=[];
+ for(const s of stores){
+  const r=await registerCleaningForStore(s.id);saved+=r.saved;skipped+=r.skipped;
+  if(r.empty)empty.push(s.name);if(r.error)errors.push(s.name+': '+r.error);
+ }
+ $('confirmAllStoresCleaning').disabled=false;
+ msg(errors.length?'Registrate '+saved+' attività; già presenti: '+skipped+'. Errori: '+errors.join(' · '):'Operazione completata: '+saved+' pulizie registrate; '+skipped+' già presenti e lasciate invariate.',''+(errors.length?'error':'ok'));
+ $('cleanProgress').textContent='Operazione conclusa: '+saved+' nuove registrazioni, '+skipped+' già presenti.'+(empty.length?' Sedi senza checklist: '+empty.join(', '):'');
  await refreshStore();
 };
 async function loadCleaning(){const a=await db.from('cleaning_areas').select('id,name,sort_order').eq('store_id',currentStore).eq('active',true).order('sort_order');const tasks=await db.from('cleaning_tasks').select('id,name,instructions,area_id,cleaning_areas(name)').eq('store_id',currentStore).eq('active',true).order('sort_order');const today=localDay();const done=await db.from('cleaning_records').select('task_id,status,notes').eq('store_id',currentStore).eq('check_date',today);const map=new Map((done.data||[]).map(x=>[x.task_id,x]));
