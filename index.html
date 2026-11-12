@@ -64,7 +64,7 @@ $('forgotBtn').onclick=async()=>{const email=$('email').value.trim();if(!email){
 $('savePasswordBtn').onclick=async()=>{const p=$('newPassword').value,c=$('confirmPassword').value;if(p.length<8){$('recoveryMsg').textContent='La password deve contenere almeno 8 caratteri.';return}if(p!==c){$('recoveryMsg').textContent='Le due password non coincidono.';return}$('recoveryMsg').textContent='Salvataggio in corso…';const {error}=await db.auth.updateUser({password:p});if(error){$('recoveryMsg').textContent='Errore: '+error.message;return}$('recoveryMsg').textContent='Password aggiornata. Ora puoi accedere.';await db.auth.signOut();$('recoveryView').classList.add('hidden');$('loginView').classList.remove('hidden');$('password').value='';$('newPassword').value='';$('confirmPassword').value=''};
 db.auth.onAuthStateChange((event)=>{if(event==='PASSWORD_RECOVERY'){$('loginView').classList.add('hidden');$('appView').classList.add('hidden');$('recoveryView').classList.remove('hidden');$('logout').classList.add('hidden')}});
 $('logout').onclick=async()=>{await db.auth.signOut();location.reload()};
-async function loadApp(){const p=await db.from('profiles').select('full_name,role,active').eq('id',user.id).single();if(p.error||!p.data?.active){$('loginMsg').textContent='Profilo non attivo. Contatta l’amministratore.';await db.auth.signOut();return}profile=p.data;
+async function loadApp(){const p=await db.from('profiles').select('full_name,role,active,operator_code').eq('id',user.id).single();if(p.error||!p.data?.active){$('loginMsg').textContent='Profilo non attivo. Contatta l’amministratore.';await db.auth.signOut();return}profile=p.data;
 const s=await db.from('stores').select('id,name,address,has_temperature_checks').eq('active',true).order('name');if(s.error){msg(s.error.message,'error');return}stores=s.data||[];
 if(profile.role==='admin'){currentStore=stores[0]?.id; $('storePickerWrap').classList.remove('hidden');$('storePicker').innerHTML=stores.map(x=>'<option value="'+x.id+'">'+x.name+' — '+x.address+'</option>').join('');$('adminTab').classList.remove('hidden')}
 else{const a=await db.from('user_stores').select('store_id,stores(id,name,address,has_temperature_checks)').eq('user_id',user.id);stores=(a.data||[]).map(x=>x.stores).filter(Boolean);currentStore=stores[0]?.id;$('storePickerWrap').classList.toggle('hidden',stores.length<2);$('storePicker').innerHTML=stores.map(x=>'<option value="'+x.id+'">'+x.name+'</option>').join('')}
@@ -256,8 +256,8 @@ $('exportCleaningPdf').onclick=async()=>{
   ]);
   if(taskResult.error)throw taskResult.error;
   const tasks=taskResult.data||[],records=cleanResult||[],ids=[...new Set(records.map(x=>x.performed_by).filter(Boolean))];
-  let people=[];if(ids.length){const p=await db.from('profiles').select('id,full_name').in('id',ids);if(p.error)throw p.error;people=p.data||[]}
-  const personMap=new Map(people.map(x=>[x.id,x.full_name||'Operatore']));
+  let people=[];if(ids.length){const p=await db.from('profiles').select('id,operator_code').in('id',ids);if(p.error)throw p.error;people=p.data||[]}
+  const personMap=new Map(people.map(x=>[x.id,x.operator_code||'Operatore']));
   const {jsPDF}=await import('https://cdn.jsdelivr.net/npm/jspdf@2.5.2/+esm');
   const doc=new jsPDF({orientation:'landscape',unit:'mm',format:'a4'});
   const W=297,H=210,m=7,monthLabel=new Date(year,monthNum-1,1).toLocaleDateString('it-IT',{month:'long',year:'numeric'});
