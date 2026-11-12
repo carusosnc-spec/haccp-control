@@ -178,7 +178,7 @@ $('exportMonthPdf').onclick=async()=>{
   doc.setFont('helvetica','bold');doc.setFontSize(15);doc.text('REGISTRO MENSILE TEMPERATURE',margin,11);
   doc.setFontSize(10);doc.text((store?.name||'Punto vendita')+' - '+(store?.address||''),margin,17);
   doc.setFont('helvetica','normal');doc.setFontSize(9);doc.text('Mese: '+monthLabel,margin,23);
-  doc.setFontSize(7);doc.text('Valori in °C · Celle vuote: controllo non registrato · Data di registrazione riportata senza orario',margin,27);
+  doc.setFontSize(7);doc.text('Valori in °C',margin,27);
   let y=top;
   const headerH=20;
   doc.setFillColor(225,235,229);doc.rect(margin,y,pageW-2*margin,headerH,'F');
