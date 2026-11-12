@@ -213,59 +213,116 @@ $('exportMonthPdf').onclick=async()=>{
   const [year,monthNum]=month.split('-').map(Number);
   const monthStart=new Date(year,monthNum-1,1),monthEnd=new Date(year,monthNum,1);
   const from=monthStart.toISOString(),to=monthEnd.toISOString();
-  const [eqResult,checkResult]=await Promise.all([
+  const startDay=month+'-01',endDay=month+'-'+String(new Date(year,monthNum,0).getDate()).padStart(2,'0');
+  const [eqResult,checkResult,taskResult,cleanResult]=await Promise.all([
    db.from('equipment').select('id,name,sort_order').eq('store_id',currentStore).eq('active',true).order('sort_order'),
-   fetchAll(db.from('temperature_checks').select('equipment_id,checked_at,measured_temperature_c').eq('store_id',currentStore).gte('checked_at',from).lt('checked_at',to).order('checked_at',{ascending:true}))
+   fetchAll(db.from('temperature_checks').select('equipment_id,checked_at,measured_temperature_c').eq('store_id',currentStore).gte('checked_at',from).lt('checked_at',to).order('checked_at',{ascending:true})),
+   db.from('cleaning_tasks').select('id,name,sort_order,cleaning_areas(name,sort_order)').eq('store_id',currentStore).eq('active',true).order('sort_order'),
+   fetchAll(db.from('cleaning_records').select('task_id,check_date,status,performed_by').eq('store_id',currentStore).gte('check_date',startDay).lte('check_date',endDay).order('check_date',{ascending:true}))
   ]);
-  if(eqResult.error)throw eqResult.error;
-  const eq=eqResult.data||[],checks=checkResult||[];
+  if(eqResult.error)throw eqResult.error;if(taskResult.error)throw taskResult.error;
+  const eq=eqResult.data||[],checks=checkResult||[],tasks=taskResult.data||[],cleanRecords=cleanResult||[];
+  const ids=[...new Set(cleanRecords.map(x=>x.performed_by).filter(Boolean))];
+  let people=[];
+  if(ids.length){const p=await db.from('profiles').select('id,full_name').in('id',ids);if(p.error)throw p.error;people=p.data||[]}
+  const personMap=new Map(people.map(x=>[x.id,x.full_name||'Operatore']));
   const {jsPDF}=await import('https://cdn.jsdelivr.net/npm/jspdf@2.5.2/+esm');
-  // A3 landscape: one page, one row per calendar day and one column per active refrigerator/equipment.
   const doc=new jsPDF({orientation:'landscape',unit:'mm',format:'a3'});
-  const pageW=420,pageH=297,margin=8,top=31,bottom=8,dateW=18;
-  const usableW=pageW-2*margin-dateW,colW=eq.length?usableW/eq.length:usableW;
-  const rowH=Math.min(7.1,(pageH-top-bottom-20)/new Date(year,monthNum,0).getDate());
-  const days=new Date(year,monthNum,0).getDate();
+  const pageW=420,pageH=297,margin=8,days=new Date(year,monthNum,0).getDate();
   const monthLabel=monthStart.toLocaleDateString('it-IT',{month:'long',year:'numeric'});
+  const fileStore=(store?.name||'punto-vendita').replace(/[^a-z0-9]+/gi,'-');
+
+  // PAGINA 1 - registro mensile temperature
+  const dateW=18,top=31,bottom=8;
+  const usableW=pageW-2*margin-dateW,colW=eq.length?usableW/eq.length:usableW;
+  const rowH=Math.min(7.1,(pageH-top-bottom-20)/days);
   doc.setFont('helvetica','bold');doc.setFontSize(15);doc.text('REGISTRO MENSILE TEMPERATURE',margin,11);
   doc.setFontSize(10);doc.text((store?.name||'Punto vendita')+' - '+(store?.address||''),margin,17);
   doc.setFont('helvetica','normal');doc.setFontSize(9);doc.text('Mese: '+monthLabel,margin,23);
   doc.setFontSize(7);doc.text('Valori in °C',margin,27);
-  let y=top;
-  const headerH=20;
+  let y=top;const headerH=20;
   doc.setFillColor(225,235,229);doc.rect(margin,y,pageW-2*margin,headerH,'F');
-  doc.setDrawColor(135,153,143);doc.setLineWidth(.2);
-  doc.rect(margin,y,dateW,headerH);
+  doc.setDrawColor(135,153,143);doc.setLineWidth(.2);doc.rect(margin,y,dateW,headerH);
   doc.setFont('helvetica','bold');doc.setFontSize(7);doc.text('GIORNO',margin+dateW/2,y+headerH/2+1,{align:'center'});
   eq.forEach((item,i)=>{
-    const x=margin+dateW+i*colW;doc.rect(x,y,colW,headerH);
-    const lines=doc.splitTextToSize(item.name||'',Math.max(8,colW-2));
-    doc.setFontSize(Math.min(7,Math.max(4.5,7-(lines.length>3?1:0))));
-    doc.text(lines.slice(0,4),x+colW/2,y+headerH/2-(Math.min(lines.length,4)-1)*1.5,{align:'center'});
+   const x=margin+dateW+i*colW;doc.rect(x,y,colW,headerH);
+   const lines=doc.splitTextToSize(item.name||'',Math.max(8,colW-2));
+   doc.setFontSize(Math.min(7,Math.max(4.5,7-(lines.length>3?1:0))));
+   doc.text(lines.slice(0,4),x+colW/2,y+headerH/2-(Math.min(lines.length,4)-1)*1.5,{align:'center'});
   });
-  y+=headerH;
-  const values=new Map();
-  for(const c of checks){
-    const d=new Date(c.checked_at);
-    const key=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
-    values.set(key+'|'+c.equipment_id,c.measured_temperature_c);
+  y+=headerH;const tempValues=new Map();
+  for(const c of checks){const d=new Date(c.checked_at);const key=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');tempValues.set(key+'|'+c.equipment_id,c.measured_temperature_c)}
+  for(let day=1;day<=days;day++){
+   const dateKey=year+'-'+String(monthNum).padStart(2,'0')+'-'+String(day).padStart(2,'0'),rowY=y+(day-1)*rowH;
+   doc.setFillColor(day%2?255:247,day%2?255:250,day%2?255:247);doc.rect(margin,rowY,pageW-2*margin,rowH,'F');
+   doc.setDrawColor(165,178,169);doc.rect(margin,rowY,dateW,rowH);
+   doc.setFont('helvetica','bold');doc.setFontSize(7);doc.text(String(day).padStart(2,'0')+'/'+String(monthNum).padStart(2,'0'),margin+dateW/2,rowY+rowH/2+1,{align:'center'});
+   eq.forEach((item,i)=>{const x=margin+dateW+i*colW;doc.rect(x,rowY,colW,rowH);const val=tempValues.get(dateKey+'|'+item.id);if(val!==undefined&&val!==null){doc.setFont('helvetica','normal');doc.setFontSize(7);doc.text(String(val)+' °C',x+colW/2,rowY+rowH/2+1,{align:'center'})}});
+  }
+
+  // PAGINA 2 - scheda di pulizia e sanificazione sul modello cartaceo del tecnico
+  doc.addPage('a3','landscape');
+  doc.setFont('helvetica','bold');doc.setFontSize(15);doc.text('SCHEDA MENSILE DI PULIZIA E SANIFICAZIONE',margin,11);
+  doc.setFontSize(10);doc.text((store?.name||'Punto vendita')+' - '+(store?.address||''),margin,17);
+  doc.setFont('helvetica','normal');doc.setFontSize(9);doc.text('Mese: '+monthLabel+'   |   Frequenza prevista: giornaliera   |   Trattamento: pulizia e sanificazione',margin,23);
+  const ordered=tasks.slice().sort((a,b)=>{
+   const aa=a.cleaning_areas?.sort_order??99,bb=b.cleaning_areas?.sort_order??99;
+   return aa-bb||(a.sort_order??0)-(b.sort_order??0);
+  });
+  const dayCol=12,operatorCol=31,tableX=margin,tableW=pageW-2*margin;
+  const taskW=ordered.length?((tableW-dayCol-operatorCol)/ordered.length):0;
+  const groupY=31,groupH=9,taskY=groupY+groupH,taskH=19,rowY0=taskY+taskH;
+  const cleanRowH=Math.min(6.7,(pageH-rowY0-18)/days);
+  doc.setDrawColor(125,145,134);doc.setLineWidth(.2);
+  doc.setFillColor(225,235,229);doc.rect(tableX,groupY,tableW,groupH,'F');
+  doc.rect(tableX,groupY,dayCol,groupH+taskH);
+  doc.setFont('helvetica','bold');doc.setFontSize(6.5);doc.text('GIORNO',tableX+dayCol/2,groupY+(groupH+taskH)/2,{align:'center'});
+  let cursor=0;
+  const groups=[];
+  ordered.forEach((t)=>{
+   const name=t.cleaning_areas?.name||'Altre attività';
+   let g=groups.find(x=>x.name===name);
+   if(!g){g={name,start:cursor,count:0};groups.push(g)}
+   g.count++;cursor++;
+  });
+  groups.forEach(g=>{
+   const x=tableX+dayCol+g.start*taskW,w=g.count*taskW;
+   doc.rect(x,groupY,w,groupH);doc.setFontSize(7);doc.text(g.name.toUpperCase(),x+w/2,groupY+5.8,{align:'center',maxWidth:Math.max(5,w-1)});
+  });
+  doc.rect(tableX+dayCol+ordered.length*taskW,groupY,operatorCol,groupH+taskH);
+  doc.setFontSize(6.5);doc.text('OPERATORE / FIRMA',tableX+dayCol+ordered.length*taskW+operatorCol/2,groupY+(groupH+taskH)/2,{align:'center',maxWidth:operatorCol-2});
+  ordered.forEach((t,i)=>{
+   const x=tableX+dayCol+i*taskW;doc.setFillColor(246,249,247);doc.rect(x,taskY,taskW,taskH,'F');doc.rect(x,taskY,taskW,taskH);
+   const label=(t.name||'').toUpperCase(),lines=doc.splitTextToSize(label,Math.max(5,taskW-1.5));
+   doc.setFont('helvetica','normal');doc.setFontSize(6);doc.text(lines.slice(0,4),x+taskW/2,taskY+taskH/2-(Math.min(4,lines.length)-1)*1.5,{align:'center'});
+  });
+  const cleanMap=new Map(),operatorsByDay=new Map();
+  for(const r of cleanRecords){
+   cleanMap.set(r.check_date+'|'+r.task_id,r.status);
+   if(r.performed_by){const set=operatorsByDay.get(r.check_date)||new Set();set.add(personMap.get(r.performed_by)||'Operatore');operatorsByDay.set(r.check_date,set)}
   }
   for(let day=1;day<=days;day++){
-    const dateKey=year+'-'+String(monthNum).padStart(2,'0')+'-'+String(day).padStart(2,'0');
-    const rowY=y+(day-1)*rowH;
-    doc.setFillColor(day%2?255:247,day%2?255:250,day%2?255:247);
-    doc.rect(margin,rowY,pageW-2*margin,rowH,'F');
-    doc.setDrawColor(165,178,169);doc.rect(margin,rowY,dateW,rowH);
-    doc.setFont('helvetica','bold');doc.setFontSize(7);doc.text(String(day).padStart(2,'0')+'/'+String(monthNum).padStart(2,'0'),margin+dateW/2,rowY+rowH/2+1,{align:'center'});
-    eq.forEach((item,i)=>{
-      const x=margin+dateW+i*colW;doc.rect(x,rowY,colW,rowH);
-      const val=values.get(dateKey+'|'+item.id);
-      if(val!==undefined&&val!==null){doc.setFont('helvetica','normal');doc.setFontSize(7);doc.text(String(val)+' °C',x+colW/2,rowY+rowH/2+1,{align:'center'})}
-    });
+   const dateKey=month+'-'+String(day).padStart(2,'0'),yy=rowY0+(day-1)*cleanRowH;
+   doc.setFillColor(day%2?255:248,day%2?255:251,day%2?255:249);doc.rect(tableX,yy,tableW,cleanRowH,'F');
+   doc.setDrawColor(165,178,169);doc.rect(tableX,yy,dayCol,cleanRowH);
+   doc.setFont('helvetica','bold');doc.setFontSize(6.5);doc.text(String(day).padStart(2,'0'),tableX+dayCol/2,yy+cleanRowH/2+1,{align:'center'});
+   ordered.forEach((t,i)=>{
+    const x=tableX+dayCol+i*taskW;doc.rect(x,yy,taskW,cleanRowH);
+    const status=cleanMap.get(dateKey+'|'+t.id);
+    const mark=status==='completed'?'C':status==='not_completed'?'N':status==='not_applicable'?'NA':'';
+    if(mark){doc.setFont('helvetica','bold');doc.setFontSize(7);doc.text(mark,x+taskW/2,yy+cleanRowH/2+1,{align:'center'})}
+   });
+   doc.rect(tableX+dayCol+ordered.length*taskW,yy,operatorCol,cleanRowH);
+   const names=[...(operatorsByDay.get(dateKey)||[])].join(', ');
+   if(names){doc.setFont('helvetica','normal');doc.setFontSize(5.5);doc.text(doc.splitTextToSize(names,operatorCol-1).slice(0,2),tableX+dayCol+ordered.length*taskW+1,yy+cleanRowH/2+1)}
   }
-  const fileStore=(store?.name||'punto-vendita').replace(/[^a-z0-9]+/gi,'-');
-  doc.save('HACCP-temperature-'+month+'-'+fileStore+'.pdf');
-  msg('PDF mensile generato in un’unica pagina. Gli orari completi restano conservati nel database.','ok');
+  const legendY=rowY0+days*cleanRowH+5;
+  doc.setFont('helvetica','normal');doc.setFontSize(7);
+  doc.text('Legenda: C = completata   N = non completata   NA = non applicabile   |   Celle vuote = attività non registrata.',margin,legendY);
+  doc.text('La registrazione elettronica conserva data, ora e account dell’operatore.',margin,legendY+4);
+
+  doc.save('HACCP-registro-mensile-'+month+'-'+fileStore+'.pdf');
+  msg('PDF mensile generato: pagina 1 temperature, pagina 2 pulizie e sanificazioni.','ok');
  }catch(e){msg('Errore nella creazione del PDF: '+(e.message||e),'error')}
  finally{$('exportMonthPdf').disabled=false;$('exportMonthPdf').textContent='Scarica registro mensile PDF'}
 };
